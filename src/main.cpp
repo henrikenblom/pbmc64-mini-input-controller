@@ -3,31 +3,34 @@
 #include "HID-Project.h"
 #include "PBMC64Wireless.h"
 
-#define TYPING_DELAY_MS 70
-#define DOUBLE_CLICK_TIMEOUT_MS 250
-#define POST_AUX_ACTION_GRACE_PERIOD 400
-#define JOYSTICK_CALIBRATION_MEASUREMENTS 6000
+#define TYPING_DELAY_MS 80
+#define POST_EMU_ACTION_GRACE_PERIOD 250
+#define JOYSTICK_CALIBRATION_MEASUREMENTS 1000
+#define JOYSTICK_SAMPLES 60
 #define JOYSTICK_FIRE_BUTTON_PIN 1
 #define JOYSTICK_EXTRA_BUTTON_PIN 0
 #define AUX_BUTTON_PIN 2
 #define JOYSTICK_X_PIN 4
 #define JOYSTICK_Y_PIN 3
-#define JOYSTICK_MOVEMENT_THRESHOLD 100
+#define JOYSTICK_MOVEMENT_ENGAGE_THRESHOLD 120
+#define JOYSTICK_MOVEMENT_RELEASE_THRESHOLD 100
+
+enum EmulatorAction {
+    MENU,
+    ON_SCREEN_KEYBOARD
+};
 
 PBMC64Wireless::JoystickInput currentJoystickInput;
 KeyboardKeycode joystickExtraKey = KEY_SPACE;
 bool joystickExtraKeyNeedsRelease = false;
 bool auxButtonPressed = false;
-bool auxButtonInDoubleClick = false;
-bool auxActionDirty = false;
-bool statusReportRequested = false;
+bool toggleOnScreenKeyboardRequested = false;
 bool volumeUpRequested = false;
 bool volumeDownRequested = false;
 bool resetAuxKeyRequested = false;
 bool programmingHappened = false;
 int joystickXCenter = 0;
 int joystickYCenter = 0;
-unsigned long lastAuxButtonReleasedTimestamp = 0;
 
 void setupUSBKeyboard() {
   BootKeyboard.begin();
@@ -47,12 +50,21 @@ bool pressed(uint32_t pin) {
   return digitalRead(pin) == LOW;
 }
 
+int readJoystick(uint32_t pin) {
+  int t = 0;
+  int n = JOYSTICK_SAMPLES;
+  while (n--) {
+    t += (int) analogRead(pin);
+  }
+  return t / JOYSTICK_SAMPLES;
+}
+
 int readJoystickX() {
-  return (int) analogRead(JOYSTICK_X_PIN);
+  return readJoystick(JOYSTICK_X_PIN);
 }
 
 int readJoystickY() {
-  return (int) analogRead(JOYSTICK_Y_PIN);
+  return readJoystick(JOYSTICK_Y_PIN);
 }
 
 void calibrateJoystick() {
@@ -86,10 +98,17 @@ void turnOffLeds() {
   digitalWrite(13, LOW);
 }
 
+void flashLed() {
+  digitalWrite(13, HIGH);
+  delay(50);
+  digitalWrite(13, LOW);
+}
+
 void setup() {
   turnOffLeds();
   setupUSBKeyboard();
   initInput();
+  flashLed();
 }
 
 void type(KeyboardKeycode k) {
@@ -104,18 +123,6 @@ void type(uint8_t k) {
   delay(TYPING_DELAY_MS);
   BootKeyboard.release(k);
   delay(TYPING_DELAY_MS);
-}
-
-void typeRow(char row[]) {
-  BootKeyboard.releaseAll();
-  int i = 0;
-  while (row[i]) {
-    type(row[i++]);
-  }
-  for (int c = 0; c < i; c++) {
-    type(KEY_LEFT_ARROW);
-  }
-  type(KEY_DOWN_ARROW);
 }
 
 size_t removeKey(KeyboardKeycode keycode) {
@@ -173,87 +180,94 @@ void updateJoystickState() {
   }
 }
 
-void pollJoystick() {
-  clearJoystick();
-  int x = (int) analogRead(JOYSTICK_X_PIN);
-  int y = (int) analogRead(JOYSTICK_Y_PIN);
-  currentJoystickInput.autofire = pressed(JOYSTICK_EXTRA_BUTTON_PIN);
-  currentJoystickInput.fire = pressed(JOYSTICK_FIRE_BUTTON_PIN);
-  if (x < joystickXCenter - JOYSTICK_MOVEMENT_THRESHOLD) {
-    currentJoystickInput.left = true;
-  } else if (x > joystickXCenter + JOYSTICK_MOVEMENT_THRESHOLD) {
-    currentJoystickInput.right = true;
+bool joystickLeft(int x) {
+  if (currentJoystickInput.left) {
+    return x < joystickXCenter - JOYSTICK_MOVEMENT_RELEASE_THRESHOLD;
   }
-  if (y > joystickYCenter + JOYSTICK_MOVEMENT_THRESHOLD) {
-    currentJoystickInput.down = true;
-  } else if (y < joystickYCenter - JOYSTICK_MOVEMENT_THRESHOLD) {
-    currentJoystickInput.up = true;
-  }
+  return x < joystickXCenter - JOYSTICK_MOVEMENT_ENGAGE_THRESHOLD;
 }
 
-void sendStatusReport() {
-  char row[80];
-  snprintf(row, 80, "up %ld", millis());
-  typeRow(row);
-  snprintf(row, 80, "x,y center %d, %d", joystickXCenter, joystickYCenter);
-  typeRow(row);
-  type(KEY_ENTER);
+bool joystickRight(int x) {
+  if (currentJoystickInput.right) {
+    return x > joystickXCenter + JOYSTICK_MOVEMENT_RELEASE_THRESHOLD;
+  }
+  return x > joystickXCenter + JOYSTICK_MOVEMENT_ENGAGE_THRESHOLD;
+}
+
+bool joystickDown(int y) {
+  if (currentJoystickInput.down) {
+    return y > joystickYCenter + JOYSTICK_MOVEMENT_RELEASE_THRESHOLD;
+  }
+  return y > joystickYCenter + JOYSTICK_MOVEMENT_ENGAGE_THRESHOLD;
+}
+
+bool joystickUp(int y) {
+  if (currentJoystickInput.up) {
+    return y < joystickYCenter - JOYSTICK_MOVEMENT_RELEASE_THRESHOLD;
+  }
+  return y < joystickYCenter - JOYSTICK_MOVEMENT_ENGAGE_THRESHOLD;
+}
+
+void pollJoystick() {
+  int x = readJoystickX();
+  int y = readJoystickY();
+  currentJoystickInput.autofire = pressed(JOYSTICK_EXTRA_BUTTON_PIN);
+  currentJoystickInput.fire = pressed(JOYSTICK_FIRE_BUTTON_PIN);
+  currentJoystickInput.left = joystickLeft(x);
+  currentJoystickInput.right = joystickRight(x);
+  currentJoystickInput.down = joystickDown(y);
+  currentJoystickInput.up = joystickUp(y);
 }
 
 void resetAuxButtonFlags() {
-  auxButtonInDoubleClick = false;
   programmingHappened = false;
-  auxActionDirty = false;
-  statusReportRequested = false;
+  toggleOnScreenKeyboardRequested = false;
   volumeUpRequested = false;
   volumeDownRequested = false;
   resetAuxKeyRequested = false;
 }
 
 bool hasAuxSystemRequest() {
-  return statusReportRequested || volumeUpRequested || volumeDownRequested || resetAuxKeyRequested;
+  return toggleOnScreenKeyboardRequested || volumeUpRequested || volumeDownRequested || resetAuxKeyRequested;
 }
 
-bool doubleClickGracePeriodHasPassed() {
-  return millis() > lastAuxButtonReleasedTimestamp + DOUBLE_CLICK_TIMEOUT_MS;
+void triggerEmulatorAction(EmulatorAction action) {
+  switch (action) {
+    case MENU:
+      type(KEY_F12);
+      break;
+    default:
+      type(KEYPAD_ADD);
+  }
+  BootKeyboard.releaseAll();
+  clearJoystick();
+  delay(POST_EMU_ACTION_GRACE_PERIOD);
 }
 
 void pollAuxButton() {
   bool previousState = auxButtonPressed;
   auxButtonPressed = pressed(AUX_BUTTON_PIN);
-  if (!statusReportRequested && auxButtonPressed && !previousState) {
-    statusReportRequested = currentJoystickInput.left;
+  if (auxButtonPressed && !previousState) {
+    toggleOnScreenKeyboardRequested = currentJoystickInput.left;
     volumeUpRequested = currentJoystickInput.up;
     volumeDownRequested = currentJoystickInput.down;
     resetAuxKeyRequested = currentJoystickInput.right;
   }
   if (!auxButtonPressed && previousState) {
-    lastAuxButtonReleasedTimestamp = millis();
-    auxActionDirty = true;
-  } else if (auxButtonPressed && !doubleClickGracePeriodHasPassed()) {
-    auxButtonInDoubleClick = true;
-  }
-  if (auxActionDirty && hasAuxSystemRequest()) {
-    if (statusReportRequested) {
-      sendStatusReport();
-    } else if (volumeUpRequested) {
-      type(KEY_F11);
-    } else if (volumeDownRequested) {
-      type(KEY_F10);
-    } else if (resetAuxKeyRequested) {
-      joystickExtraKey = KEY_SPACE;
-    }
-    resetAuxButtonFlags();
-  } else if (auxActionDirty && doubleClickGracePeriodHasPassed()) {
-    if (!programmingHappened) {
-      if (auxButtonInDoubleClick) {
-        type(KEYPAD_ADD);
-      } else {
-        type(KEY_F12);
+    if (hasAuxSystemRequest()) {
+      if (toggleOnScreenKeyboardRequested) {
+        triggerEmulatorAction(ON_SCREEN_KEYBOARD);
+      } else if (volumeUpRequested) {
+        type(KEY_F11);
+      } else if (volumeDownRequested) {
+        type(KEY_F10);
+      } else if (resetAuxKeyRequested) {
+        joystickExtraKey = KEY_SPACE;
       }
-      BootKeyboard.releaseAll();
-      clearJoystick();
-      delay(POST_AUX_ACTION_GRACE_PERIOD);
+    } else {
+      if (!programmingHappened) {
+        triggerEmulatorAction(MENU);
+      }
     }
     resetAuxButtonFlags();
   }
