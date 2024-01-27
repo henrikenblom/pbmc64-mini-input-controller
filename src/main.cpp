@@ -3,67 +3,124 @@
 #include "HID-Project.h"
 #include "PBMC64Wireless.h"
 
-#define NUM_LEDS 1
-#define TYPING_DELAY 70
-#define LOCAL_JOYSTICK_FIRE_PIN 0
-#define LOCAL_JOYSTICK_PROGRAMMABLE_BUTTON_PIN 1
-#define AUX_BUTTON_PIN 11
-#define LOCAL_JOYSTICK_X_PIN PIN_A3
-#define LOCAL_JOYSTICK_Y_PIN PIN_A4
-#define LOCAL_JOYSTICK_RIGHT_TRIGGER  275
-#define LOCAL_JOYSTICK_LEFT_TRIGGER 470
-#define LOCAL_JOYSTICK_UP_TRIGGER 450
-#define LOCAL_JOYSTICK_DOWN_TRIGGER 230
+#define TYPING_DELAY_MS 70
+#define DOUBLE_CLICK_TIMEOUT_MS 250
+#define POST_AUX_ACTION_GRACE_PERIOD 400
+#define JOYSTICK_CALIBRATION_MEASUREMENTS 6000
+#define JOYSTICK_FIRE_BUTTON_PIN 1
+#define JOYSTICK_EXTRA_BUTTON_PIN 0
+#define AUX_BUTTON_PIN 2
+#define JOYSTICK_X_PIN 4
+#define JOYSTICK_Y_PIN 3
+#define JOYSTICK_MOVEMENT_THRESHOLD 100
 
-CRGB leds[NUM_LEDS];
-PBMC64Wireless::JoystickInput currentLocalJoystickInput;
-KeyboardKeycode localJoystickAuxKey = KEY_SPACE;
-bool localJoystickAuxKeyNeedsRelease = false;
+PBMC64Wireless::JoystickInput currentJoystickInput;
+KeyboardKeycode joystickExtraKey = KEY_SPACE;
+bool joystickExtraKeyNeedsRelease = false;
 bool auxButtonPressed = false;
+bool auxButtonInDoubleClick = false;
+bool auxActionDirty = false;
+bool statusReportRequested = false;
+bool volumeUpRequested = false;
+bool volumeDownRequested = false;
+bool resetAuxKeyRequested = false;
 bool programmingHappened = false;
+int joystickXCenter = 0;
+int joystickYCenter = 0;
+unsigned long lastAuxButtonReleasedTimestamp = 0;
 
 void setupUSBKeyboard() {
   BootKeyboard.begin();
   BootKeyboard.releaseAll();
 }
 
-void clearLocalJoystick() {
-  currentLocalJoystickInput.fire = false;
-  currentLocalJoystickInput.autofire = false;
-  currentLocalJoystickInput.left = false;
-  currentLocalJoystickInput.right = false;
-  currentLocalJoystickInput.up = false;
-  currentLocalJoystickInput.down = false;
+void clearJoystick() {
+  currentJoystickInput.fire = false;
+  currentJoystickInput.autofire = false;
+  currentJoystickInput.left = false;
+  currentJoystickInput.right = false;
+  currentJoystickInput.up = false;
+  currentJoystickInput.down = false;
 }
 
-void initLocalInput() {
-  pinMode(LOCAL_JOYSTICK_PROGRAMMABLE_BUTTON_PIN, INPUT);
-  pinMode(LOCAL_JOYSTICK_FIRE_PIN, INPUT);
-  pinMode(LOCAL_JOYSTICK_X_PIN, INPUT);
-  pinMode(LOCAL_JOYSTICK_Y_PIN, INPUT);
-  pinMode(AUX_BUTTON_PIN, INPUT);
-  clearLocalJoystick();
+bool pressed(uint32_t pin) {
+  return digitalRead(pin) == LOW;
 }
 
-void setup() {
-  CFastLED::addLeds<APA102, INTERNAL_DS_DATA, INTERNAL_DS_CLK, BGR>(leds, NUM_LEDS);
+int readJoystickX() {
+  return (int) analogRead(JOYSTICK_X_PIN);
+}
+
+int readJoystickY() {
+  return (int) analogRead(JOYSTICK_Y_PIN);
+}
+
+void calibrateJoystick() {
+  delay(400);
+  int xTotal, yTotal = 0;
+  int n = JOYSTICK_CALIBRATION_MEASUREMENTS;
+  while (n--) {
+    xTotal += readJoystickX();
+    yTotal += readJoystickY();
+  }
+  joystickXCenter = xTotal / JOYSTICK_CALIBRATION_MEASUREMENTS;
+  joystickYCenter = yTotal / JOYSTICK_CALIBRATION_MEASUREMENTS;
+}
+
+void initInput() {
+  pinMode(JOYSTICK_EXTRA_BUTTON_PIN, INPUT_PULLUP);
+  pinMode(JOYSTICK_FIRE_BUTTON_PIN, INPUT_PULLUP);
+  pinMode(AUX_BUTTON_PIN, INPUT_PULLUP);
+  pinMode(JOYSTICK_X_PIN, INPUT);
+  pinMode(JOYSTICK_Y_PIN, INPUT);
+  clearJoystick();
+  calibrateJoystick();
+}
+
+void turnOffLeds() {
+  CRGB leds[1];
+  CFastLED::addLeds<APA102, INTERNAL_DS_DATA, INTERNAL_DS_CLK, BGR>(leds, 1);
   leds[0] = CRGB::Black;
   FastLED.show();
   pinMode(13, OUTPUT);
   digitalWrite(13, LOW);
+}
+
+void setup() {
+  turnOffLeds();
   setupUSBKeyboard();
+  initInput();
 }
 
 void type(KeyboardKeycode k) {
   BootKeyboard.press(k);
-  delay(TYPING_DELAY);
+  delay(TYPING_DELAY_MS);
   BootKeyboard.release(k);
-  delay(TYPING_DELAY);
+  delay(TYPING_DELAY_MS);
+}
+
+void type(uint8_t k) {
+  BootKeyboard.press(k);
+  delay(TYPING_DELAY_MS);
+  BootKeyboard.release(k);
+  delay(TYPING_DELAY_MS);
+}
+
+void typeRow(char row[]) {
+  BootKeyboard.releaseAll();
+  int i = 0;
+  while (row[i]) {
+    type(row[i++]);
+  }
+  for (int c = 0; c < i; c++) {
+    type(KEY_LEFT_ARROW);
+  }
+  type(KEY_DOWN_ARROW);
 }
 
 size_t removeKey(KeyboardKeycode keycode) {
-  if (currentLocalJoystickInput.autofire) {
-    if (localJoystickAuxKey != keycode) {
+  if (currentJoystickInput.autofire) {
+    if (joystickExtraKey != keycode) {
       return BootKeyboard.remove(keycode);
     } else {
       return 0;
@@ -74,71 +131,139 @@ size_t removeKey(KeyboardKeycode keycode) {
 
 size_t addKey(KeyboardKeycode keycode) {
   if (auxButtonPressed) {
-    localJoystickAuxKey = keycode;
+    joystickExtraKey = keycode;
     BootKeyboard.remove(keycode);
     programmingHappened = true;
   }
   return BootKeyboard.add(keycode);
 }
 
-bool localJoystickActive() {
-  return currentLocalJoystickInput.left
-         || currentLocalJoystickInput.right
-         || currentLocalJoystickInput.up
-         || currentLocalJoystickInput.down
-         || currentLocalJoystickInput.fire
-         || currentLocalJoystickInput.autofire;
+bool joystickActive() {
+  return currentJoystickInput.left
+         || currentJoystickInput.right
+         || currentJoystickInput.up
+         || currentJoystickInput.down
+         || currentJoystickInput.fire
+         || currentJoystickInput.autofire;
 }
 
-void updateLocalJoystickState() {
-  if (localJoystickActive()) {
-    if (currentLocalJoystickInput.autofire) {
-      BootKeyboard.add(localJoystickAuxKey);
-      localJoystickAuxKeyNeedsRelease = true;
+void updateJoystickState() {
+  if (joystickActive()) {
+    if (currentJoystickInput.autofire) {
+      BootKeyboard.add(joystickExtraKey);
+      joystickExtraKeyNeedsRelease = true;
     } else {
-      BootKeyboard.remove(localJoystickAuxKey);
+      BootKeyboard.remove(joystickExtraKey);
     }
-    currentLocalJoystickInput.left ? addKey(KEYPAD_7) : removeKey(KEYPAD_7);
-    currentLocalJoystickInput.right ? addKey(KEYPAD_1) : removeKey(KEYPAD_1);
-    currentLocalJoystickInput.up ? addKey(KEYPAD_9) : removeKey(KEYPAD_9);
-    currentLocalJoystickInput.down ? addKey(KEYPAD_3) : removeKey(KEYPAD_3);
-    currentLocalJoystickInput.fire ? addKey(KEYPAD_0) : removeKey(KEYPAD_0);
+    currentJoystickInput.left ? addKey(KEYPAD_7) : removeKey(KEYPAD_7);
+    currentJoystickInput.right ? addKey(KEYPAD_1) : removeKey(KEYPAD_1);
+    currentJoystickInput.up ? addKey(KEYPAD_9) : removeKey(KEYPAD_9);
+    currentJoystickInput.down ? addKey(KEYPAD_3) : removeKey(KEYPAD_3);
+    currentJoystickInput.fire ? addKey(KEYPAD_0) : removeKey(KEYPAD_0);
   } else {
     BootKeyboard.release(KEYPAD_7);
     BootKeyboard.release(KEYPAD_1);
     BootKeyboard.release(KEYPAD_9);
     BootKeyboard.release(KEYPAD_3);
     BootKeyboard.release(KEYPAD_0);
-    if (localJoystickAuxKeyNeedsRelease) {
-      BootKeyboard.release(localJoystickAuxKey);
-      localJoystickAuxKeyNeedsRelease = false;
+    if (joystickExtraKeyNeedsRelease) {
+      BootKeyboard.release(joystickExtraKey);
+      joystickExtraKeyNeedsRelease = false;
     }
   }
 }
 
-void pollLocalJoystick() {
-  clearLocalJoystick();
-  int x = (int) analogRead(LOCAL_JOYSTICK_X_PIN);
-  int y = (int) analogRead(LOCAL_JOYSTICK_Y_PIN);
-  currentLocalJoystickInput.autofire = digitalRead(LOCAL_JOYSTICK_PROGRAMMABLE_BUTTON_PIN);
-  currentLocalJoystickInput.fire = digitalRead(LOCAL_JOYSTICK_FIRE_PIN);
-  if (x < LOCAL_JOYSTICK_RIGHT_TRIGGER) {
-    currentLocalJoystickInput.right = true;
-  } else if (x > LOCAL_JOYSTICK_LEFT_TRIGGER) {
-    currentLocalJoystickInput.left = true;
+void pollJoystick() {
+  clearJoystick();
+  int x = (int) analogRead(JOYSTICK_X_PIN);
+  int y = (int) analogRead(JOYSTICK_Y_PIN);
+  currentJoystickInput.autofire = pressed(JOYSTICK_EXTRA_BUTTON_PIN);
+  currentJoystickInput.fire = pressed(JOYSTICK_FIRE_BUTTON_PIN);
+  if (x < joystickXCenter - JOYSTICK_MOVEMENT_THRESHOLD) {
+    currentJoystickInput.left = true;
+  } else if (x > joystickXCenter + JOYSTICK_MOVEMENT_THRESHOLD) {
+    currentJoystickInput.right = true;
   }
-  if (y > LOCAL_JOYSTICK_UP_TRIGGER) {
-    currentLocalJoystickInput.up = true;
-  } else if (y < LOCAL_JOYSTICK_DOWN_TRIGGER) {
-    currentLocalJoystickInput.down = true;
+  if (y > joystickYCenter + JOYSTICK_MOVEMENT_THRESHOLD) {
+    currentJoystickInput.down = true;
+  } else if (y < joystickYCenter - JOYSTICK_MOVEMENT_THRESHOLD) {
+    currentJoystickInput.up = true;
+  }
+}
+
+void sendStatusReport() {
+  char row[80];
+  snprintf(row, 80, "up %ld", millis());
+  typeRow(row);
+  snprintf(row, 80, "x,y center %d, %d", joystickXCenter, joystickYCenter);
+  typeRow(row);
+  type(KEY_ENTER);
+}
+
+void resetAuxButtonFlags() {
+  auxButtonInDoubleClick = false;
+  programmingHappened = false;
+  auxActionDirty = false;
+  statusReportRequested = false;
+  volumeUpRequested = false;
+  volumeDownRequested = false;
+  resetAuxKeyRequested = false;
+}
+
+bool hasAuxSystemRequest() {
+  return statusReportRequested || volumeUpRequested || volumeDownRequested || resetAuxKeyRequested;
+}
+
+bool doubleClickGracePeriodHasPassed() {
+  return millis() > lastAuxButtonReleasedTimestamp + DOUBLE_CLICK_TIMEOUT_MS;
+}
+
+void pollAuxButton() {
+  bool previousState = auxButtonPressed;
+  auxButtonPressed = pressed(AUX_BUTTON_PIN);
+  if (!statusReportRequested && auxButtonPressed && !previousState) {
+    statusReportRequested = currentJoystickInput.left;
+    volumeUpRequested = currentJoystickInput.up;
+    volumeDownRequested = currentJoystickInput.down;
+    resetAuxKeyRequested = currentJoystickInput.right;
+  }
+  if (!auxButtonPressed && previousState) {
+    lastAuxButtonReleasedTimestamp = millis();
+    auxActionDirty = true;
+  } else if (auxButtonPressed && !doubleClickGracePeriodHasPassed()) {
+    auxButtonInDoubleClick = true;
+  }
+  if (auxActionDirty && hasAuxSystemRequest()) {
+    if (statusReportRequested) {
+      sendStatusReport();
+    } else if (volumeUpRequested) {
+      type(KEY_F11);
+    } else if (volumeDownRequested) {
+      type(KEY_F10);
+    } else if (resetAuxKeyRequested) {
+      joystickExtraKey = KEY_SPACE;
+    }
+    resetAuxButtonFlags();
+  } else if (auxActionDirty && doubleClickGracePeriodHasPassed()) {
+    if (!programmingHappened) {
+      if (auxButtonInDoubleClick) {
+        type(KEYPAD_ADD);
+      } else {
+        type(KEY_F12);
+      }
+      BootKeyboard.releaseAll();
+      clearJoystick();
+      delay(POST_AUX_ACTION_GRACE_PERIOD);
+    }
+    resetAuxButtonFlags();
   }
 }
 
 void loop() {
-  //TODO: Add hardware and uncomment:
-  /*pollLocalJoystick();
-  updateLocalJoystickState();
-  if (localJoystickActive()) {
+  pollAuxButton();
+  pollJoystick();
+  updateJoystickState();
+  if (joystickActive()) {
     BootKeyboard.send();
-  }*/
+  }
 }
