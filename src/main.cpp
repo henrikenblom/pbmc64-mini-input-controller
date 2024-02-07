@@ -21,13 +21,11 @@ enum EmulatorAction {
 };
 
 PBMC64Wireless::JoystickInput currentJoystickInput;
-KeyboardKeycode joystickExtraKey = KEY_SPACE;
 bool joystickExtraKeyNeedsRelease = false;
 bool auxButtonPressed = false;
 bool toggleOnScreenKeyboardRequested = false;
 bool volumeUpRequested = false;
 bool volumeDownRequested = false;
-bool resetAuxKeyRequested = false;
 int joystickXCenter = 0;
 int joystickYCenter = 0;
 
@@ -126,7 +124,7 @@ void type(uint8_t k) {
 
 size_t removeKey(KeyboardKeycode keycode) {
   if (currentJoystickInput.autofire) {
-    if (joystickExtraKey != keycode) {
+    if (KEY_SPACE != keycode) {
       return BootKeyboard.remove(keycode);
     } else {
       return 0;
@@ -151,10 +149,10 @@ bool joystickActive() {
 void updateJoystickState() {
   if (joystickActive()) {
     if (currentJoystickInput.autofire) {
-      BootKeyboard.add(joystickExtraKey);
+      BootKeyboard.add(KEY_SPACE);
       joystickExtraKeyNeedsRelease = true;
     } else {
-      BootKeyboard.remove(joystickExtraKey);
+      BootKeyboard.remove(KEY_SPACE);
     }
     currentJoystickInput.left ? addKey(KEYPAD_7) : removeKey(KEYPAD_7);
     currentJoystickInput.right ? addKey(KEYPAD_1) : removeKey(KEYPAD_1);
@@ -168,7 +166,7 @@ void updateJoystickState() {
     BootKeyboard.release(KEYPAD_3);
     BootKeyboard.release(KEYPAD_0);
     if (joystickExtraKeyNeedsRelease) {
-      BootKeyboard.release(joystickExtraKey);
+      BootKeyboard.release(KEY_SPACE);
       joystickExtraKeyNeedsRelease = false;
     }
   }
@@ -217,11 +215,10 @@ void resetAuxButtonFlags() {
   toggleOnScreenKeyboardRequested = false;
   volumeUpRequested = false;
   volumeDownRequested = false;
-  resetAuxKeyRequested = false;
 }
 
 bool hasAuxSystemRequest() {
-  return toggleOnScreenKeyboardRequested || volumeUpRequested || volumeDownRequested || resetAuxKeyRequested;
+  return toggleOnScreenKeyboardRequested || volumeUpRequested || volumeDownRequested;
 }
 
 void triggerEmulatorAction(EmulatorAction action) {
@@ -244,7 +241,6 @@ void pollAuxButton() {
     toggleOnScreenKeyboardRequested = currentJoystickInput.left;
     volumeUpRequested = currentJoystickInput.up;
     volumeDownRequested = currentJoystickInput.down;
-    resetAuxKeyRequested = currentJoystickInput.right;
   }
   if (!auxButtonPressed && previousState) {
     if (hasAuxSystemRequest()) {
@@ -254,8 +250,6 @@ void pollAuxButton() {
         type(KEY_F11);
       } else if (volumeDownRequested) {
         type(KEY_F10);
-      } else if (resetAuxKeyRequested) {
-        joystickExtraKey = KEY_SPACE;
       }
     } else {
       triggerEmulatorAction(MENU);
