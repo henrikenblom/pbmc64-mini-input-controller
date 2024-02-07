@@ -28,7 +28,6 @@ bool toggleOnScreenKeyboardRequested = false;
 bool volumeUpRequested = false;
 bool volumeDownRequested = false;
 bool resetAuxKeyRequested = false;
-bool programmingHappened = false;
 int joystickXCenter = 0;
 int joystickYCenter = 0;
 
@@ -137,11 +136,6 @@ size_t removeKey(KeyboardKeycode keycode) {
 }
 
 size_t addKey(KeyboardKeycode keycode) {
-  if (auxButtonPressed) {
-    joystickExtraKey = keycode;
-    BootKeyboard.remove(keycode);
-    programmingHappened = true;
-  }
   return BootKeyboard.add(keycode);
 }
 
@@ -220,7 +214,6 @@ void pollJoystick() {
 }
 
 void resetAuxButtonFlags() {
-  programmingHappened = false;
   toggleOnScreenKeyboardRequested = false;
   volumeUpRequested = false;
   volumeDownRequested = false;
@@ -265,9 +258,7 @@ void pollAuxButton() {
         joystickExtraKey = KEY_SPACE;
       }
     } else {
-      if (!programmingHappened) {
-        triggerEmulatorAction(MENU);
-      }
+      triggerEmulatorAction(MENU);
     }
     resetAuxButtonFlags();
   }
