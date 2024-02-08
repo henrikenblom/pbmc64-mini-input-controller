@@ -124,7 +124,7 @@ void type(uint8_t k) {
 
 size_t removeKey(KeyboardKeycode keycode) {
   if (currentJoystickInput.autofire) {
-    if (KEY_SPACE != keycode) {
+    if (KEYPAD_SUBTRACT != keycode) {
       return BootKeyboard.remove(keycode);
     } else {
       return 0;
@@ -149,10 +149,10 @@ bool joystickActive() {
 void updateJoystickState() {
   if (joystickActive()) {
     if (currentJoystickInput.autofire) {
-      BootKeyboard.add(KEY_SPACE);
+      BootKeyboard.add(KEYPAD_SUBTRACT);
       joystickExtraKeyNeedsRelease = true;
     } else {
-      BootKeyboard.remove(KEY_SPACE);
+      BootKeyboard.remove(KEYPAD_SUBTRACT);
     }
     currentJoystickInput.left ? addKey(KEYPAD_7) : removeKey(KEYPAD_7);
     currentJoystickInput.right ? addKey(KEYPAD_1) : removeKey(KEYPAD_1);
@@ -166,7 +166,7 @@ void updateJoystickState() {
     BootKeyboard.release(KEYPAD_3);
     BootKeyboard.release(KEYPAD_0);
     if (joystickExtraKeyNeedsRelease) {
-      BootKeyboard.release(KEY_SPACE);
+      BootKeyboard.release(KEYPAD_SUBTRACT);
       joystickExtraKeyNeedsRelease = false;
     }
   }
